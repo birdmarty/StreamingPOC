@@ -20,40 +20,41 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 
-
 import com.github.se_bastiaan.torrentstream.StreamStatus;
 import com.github.se_bastiaan.torrentstream.Torrent;
 import com.github.se_bastiaan.torrentstream.TorrentOptions;
-import com.github.se_bastiaan.torrentstream.TorrentStream;
 import com.github.se_bastiaan.torrentstreamserver.TorrentServerListener;
 import com.github.se_bastiaan.torrentstreamserver.TorrentStreamNotInitializedException;
 import com.github.se_bastiaan.torrentstreamserver.TorrentStreamServer;
 
-import com.google.android.exoplayer2.MediaItem;
-import com.google.android.exoplayer2.PlaybackException;
-import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.SimpleExoPlayer;
-import com.google.android.exoplayer2.ui.PlayerView;
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.MediaPlayer;
+import org.videolan.libvlc.util.VLCVideoLayout;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.InetAddress;
 import java.net.URLDecoder;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 
 @SuppressLint("SetTextI18n")
 public class MainActivity extends AppCompatActivity implements TorrentServerListener {
 
-    private SimpleExoPlayer exoPlayer;
-    private PlayerView playerView;
     private static final String TORRENT = "Torrent";
     private Button button;
     private ProgressBar progressBar;
-    private TorrentStream torrentStream;
     private TorrentStreamServer torrentStreamServer;
     private TextView videoLocationText;
+    private VLCVideoLayout videoLayout;
 
-    private String streamUrl = "magnet:?xt=urn:btih:3BA0DF17159BA0AC466B1A440CE64FBB5399775E";
+    // VLC components
+    private LibVLC libVLC;
+    private MediaPlayer mediaPlayer;
+
+    private String streamUrl = "magnet:?xt=urn:btih:2526B3B894BF098DE17440BF8E7C8C66B97BB9BA&dn";
 
     @SuppressLint("SetTextI18n")
     private final View.OnClickListener onClickListener = new View.OnClickListener() {
@@ -81,15 +82,15 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-
-        playerView = findViewById(R.id.player_view);
+        videoLayout = findViewById(R.id.videoLayout);
         button = findViewById(R.id.button);
         button.setOnClickListener(onClickListener);
         videoLocationText = findViewById(R.id.videoLocationText);
-
         progressBar = findViewById(R.id.progress);
         progressBar.setMax(100);
 
+        // Initialize VLC
+        initVLC();
 
         String action = getIntent().getAction();
         Uri data = getIntent().getData();
@@ -106,7 +107,6 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
                 .prepareSize(100L * 1024 * 1024) // 10MB buffer
                 .removeFilesAfterStop(true)
                 .build();
-
 
         String ipAddress = "127.0.0.1";
         try {
@@ -126,33 +126,21 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
         torrentStreamServer.addListener(this);
 
         button.setOnClickListener(onClickListener);
-
-        progressBar.setMax(100);
-        initExoPlayer();
-
     }
 
-    private void initExoPlayer() {
-        exoPlayer = new SimpleExoPlayer.Builder(this)
-                .setHandleAudioBecomingNoisy(true)
-                .build();
-        playerView.setPlayer(exoPlayer);
-
-        // Add error listener
-        exoPlayer.addListener(new Player.Listener() {
-            @Override
-            public void onPlayerError(PlaybackException error) {
-                Log.e(TORRENT, "ExoPlayer error", error);
-                Toast.makeText(MainActivity.this, "Playback error: " + error.getMessage(), Toast.LENGTH_SHORT).show();
-            }
-        });
+    private void initVLC() {
+        ArrayList<String> options = new ArrayList<>();
+        options.add("--no-drop-late-frames");
+        options.add("--no-skip-frames");
+        libVLC = new LibVLC(this, options);
+        mediaPlayer = new MediaPlayer(libVLC);
+        mediaPlayer.attachViews(videoLayout, null, false, false);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-
-        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 0);
         }
     }
@@ -160,34 +148,39 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (exoPlayer != null) {
-            exoPlayer.release();
-            exoPlayer = null;
-        }
+        releaseVLC();
         if (torrentStreamServer != null) {
-            // Stop torrent first
             torrentStreamServer.stopStream();
             torrentStreamServer.stopTorrentStream();
-
             deleteFiles();
             torrentStreamServer = null;
         }
     }
 
+    private void releaseVLC() {
+        if (mediaPlayer != null) {
+            mediaPlayer.stop();
+            mediaPlayer.detachViews();
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
+        if (libVLC != null) {
+            libVLC.release();
+            libVLC = null;
+        }
+    }
+
     public void deleteFiles() {
-        // Delete downloaded files
         try {
             Torrent currentTorrent = torrentStreamServer.getCurrentTorrent();
             if (currentTorrent != null) {
                 File videoFile = currentTorrent.getVideoFile();
                 File torrentDir = videoFile.getParentFile();
 
-                // Delete video file
                 if (videoFile.exists() && !videoFile.delete()) {
                     Log.e(TORRENT, "Failed to delete video file: " + videoFile.getAbsolutePath());
                 }
 
-                // Delete torrent directory
                 if (torrentDir != null && torrentDir.exists() && !deleteRecursive(torrentDir)) {
                     Log.e(TORRENT, "Failed to delete torrent directory: " + torrentDir.getAbsolutePath());
                 }
@@ -196,6 +189,7 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
             Log.e(TORRENT, "Cleanup error", e);
         }
     }
+
     private boolean deleteRecursive(File fileOrDirectory) {
         if (fileOrDirectory.isDirectory()) {
             File[] files = fileOrDirectory.listFiles();
@@ -236,12 +230,6 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
             Log.d(TORRENT, "Progress: " + status.bufferProgress + " speed: " + (status.downloadSpeed / 1024) + " seeds: " + status.seeds);
             progressBar.setProgress(status.bufferProgress);
         }
-        runOnUiThread(() -> {
-            if (exoPlayer != null) {
-                playerView.setShowBuffering(status.bufferProgress < 100 ?
-                        PlayerView.SHOW_BUFFERING_ALWAYS : PlayerView.SHOW_BUFFERING_NEVER);
-            }
-        });
     }
 
     @Override
@@ -251,25 +239,19 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
     }
 
     @Override
-    public void onServerReady(Torrent torrent) {
-
-    }
-
+    public void onServerReady(Torrent torrent) {}
 
     @Override
     public void onServerReady(String url) {
         Log.d(TORRENT, "onServerReady: " + url);
         runOnUiThread(() -> {
             try {
-                Uri uri = Uri.parse(url);
-                MediaItem mediaItem = MediaItem.fromUri(uri);
-
-                exoPlayer.setMediaItem(mediaItem);
-                exoPlayer.prepare();
-                exoPlayer.setPlayWhenReady(true);
-
+                Media media = new Media(libVLC, Uri.parse(url));
+                mediaPlayer.setMedia(media);
+                media.release();
+                mediaPlayer.play();
             } catch (Exception e) {
-                Log.e(TORRENT, "Player setup error", e);
+                Log.e(TORRENT, "VLC setup error", e);
                 Toast.makeText(MainActivity.this, "Player setup failed", Toast.LENGTH_SHORT).show();
             }
         });
@@ -296,4 +278,3 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
                 (byte) ((ip >> 24) & 0xFF)};
     }
 }
-

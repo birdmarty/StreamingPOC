@@ -29,8 +29,7 @@ android {
 }
 
 dependencies {
-    implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
-    implementation 'com.google.android.exoplayer:exoplayer-ui:2.19.1'
+    implementation 'org.videolan.android:libvlc-all:3.6.0'
     implementation project(':streamserverlib')
     implementation project(':library')
     implementation libs.appcompat
