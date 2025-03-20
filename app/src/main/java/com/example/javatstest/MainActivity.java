@@ -27,18 +27,14 @@ import com.github.se_bastiaan.torrentstreamserver.TorrentServerListener;
 import com.github.se_bastiaan.torrentstreamserver.TorrentStreamNotInitializedException;
 import com.github.se_bastiaan.torrentstreamserver.TorrentStreamServer;
 
-import org.videolan.libvlc.LibVLC;
-import org.videolan.libvlc.Media;
-import org.videolan.libvlc.MediaPlayer;
-import org.videolan.libvlc.util.VLCVideoLayout;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
 
 @SuppressLint("SetTextI18n")
 public class MainActivity extends AppCompatActivity implements TorrentServerListener {
@@ -48,13 +44,8 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
     private ProgressBar progressBar;
     private TorrentStreamServer torrentStreamServer;
     private TextView videoLocationText;
-    private VLCVideoLayout videoLayout;
 
-    // VLC components
-    private LibVLC libVLC;
-    private MediaPlayer mediaPlayer;
-
-    private String streamUrl = "magnet:?xt=urn:btih:2526B3B894BF098DE17440BF8E7C8C66B97BB9BA&dn";
+    private String streamUrl = "magnet:?xt=urn:btih:F1E910A7B49D4108B8854C393DAAAFE0AC2FC716&dn";
 
     @SuppressLint("SetTextI18n")
     private final View.OnClickListener onClickListener = new View.OnClickListener() {
@@ -82,15 +73,11 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        videoLayout = findViewById(R.id.videoLayout);
         button = findViewById(R.id.button);
         button.setOnClickListener(onClickListener);
         videoLocationText = findViewById(R.id.videoLocationText);
         progressBar = findViewById(R.id.progress);
         progressBar.setMax(100);
-
-        // Initialize VLC
-        initVLC();
 
         String action = getIntent().getAction();
         Uri data = getIntent().getData();
@@ -104,37 +91,18 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
 
         TorrentOptions torrentOptions = new TorrentOptions.Builder()
                 .saveLocation(getExternalCacheDir())
-                .prepareSize(100L * 1024 * 1024) // 10MB buffer
+                .prepareSize(100L * 1024 * 1024)
                 .removeFilesAfterStop(true)
                 .build();
 
-        String ipAddress = "127.0.0.1";
-        try {
-            InetAddress inetAddress = getIpAddress(this);
-            if (inetAddress != null) {
-                ipAddress = inetAddress.getHostAddress();
-            }
-        } catch (UnknownHostException e) {
-            e.printStackTrace();
-        }
-
         torrentStreamServer = TorrentStreamServer.getInstance();
         torrentStreamServer.setTorrentOptions(torrentOptions);
-        torrentStreamServer.setServerHost(ipAddress);
+        torrentStreamServer.setServerHost("0.0.0.0");
         torrentStreamServer.setServerPort(8080);
         torrentStreamServer.startTorrentStream();
         torrentStreamServer.addListener(this);
 
         button.setOnClickListener(onClickListener);
-    }
-
-    private void initVLC() {
-        ArrayList<String> options = new ArrayList<>();
-        options.add("--no-drop-late-frames");
-        options.add("--no-skip-frames");
-        libVLC = new LibVLC(this, options);
-        mediaPlayer = new MediaPlayer(libVLC);
-        mediaPlayer.attachViews(videoLayout, null, false, false);
     }
 
     @Override
@@ -148,25 +116,11 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        releaseVLC();
         if (torrentStreamServer != null) {
             torrentStreamServer.stopStream();
             torrentStreamServer.stopTorrentStream();
             deleteFiles();
             torrentStreamServer = null;
-        }
-    }
-
-    private void releaseVLC() {
-        if (mediaPlayer != null) {
-            mediaPlayer.stop();
-            mediaPlayer.detachViews();
-            mediaPlayer.release();
-            mediaPlayer = null;
-        }
-        if (libVLC != null) {
-            libVLC.release();
-            libVLC = null;
         }
     }
 
@@ -246,13 +200,56 @@ public class MainActivity extends AppCompatActivity implements TorrentServerList
         Log.d(TORRENT, "onServerReady: " + url);
         runOnUiThread(() -> {
             try {
-                Media media = new Media(libVLC, Uri.parse(url));
-                mediaPlayer.setMedia(media);
-                media.release();
-                mediaPlayer.play();
+                // Preserve the port number in the URL
+                Uri originalUri = Uri.parse(url);
+                Uri streamUri = originalUri.buildUpon()
+                        .scheme("http")
+                        .encodedAuthority("127.0.0.1:" + originalUri.getPort())
+                        .build();
+
+                Log.d(TORRENT, "Final stream URI: " + streamUri);
+
+                Intent vlcIntent = new Intent(Intent.ACTION_VIEW);
+                vlcIntent.setDataAndType(streamUri, "video/*");
+                vlcIntent.setPackage("org.videolan.vlc");
+                vlcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                // Verify VLC is installed
+                if (vlcIntent.resolveActivity(getPackageManager()) != null) {
+                    // Verify the server is reachable first
+                    new Thread(() -> {
+                        try {
+                            URL testUrl = new URL(streamUri.toString());
+                            HttpURLConnection connection = (HttpURLConnection) testUrl.openConnection();
+                            connection.setRequestMethod("HEAD");
+                            int responseCode = connection.getResponseCode();
+
+                            runOnUiThread(() -> {
+                                if (responseCode == 200) {
+                                    startActivity(vlcIntent);
+                                } else {
+                                    Toast.makeText(MainActivity.this,
+                                            "Server unreachable (Error: " + responseCode + ")",
+                                            Toast.LENGTH_LONG).show();
+                                }
+                            });
+                        } catch (Exception e) {
+                            runOnUiThread(() -> {
+                                Toast.makeText(MainActivity.this,
+                                        "Connection failed: " + e.getMessage(),
+                                        Toast.LENGTH_LONG).show();
+                            });
+                        }
+                    }).start();
+
+                } else {
+                    Toast.makeText(this, "VLC app not installed", Toast.LENGTH_SHORT).show();
+                    startActivity(new Intent(Intent.ACTION_VIEW,
+                            Uri.parse("market://details?id=org.videolan.vlc")));
+                }
             } catch (Exception e) {
-                Log.e(TORRENT, "VLC setup error", e);
-                Toast.makeText(MainActivity.this, "Player setup failed", Toast.LENGTH_SHORT).show();
+                Log.e(TORRENT, "VLC launch error", e);
+                Toast.makeText(MainActivity.this, "Error: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
         });
     }
